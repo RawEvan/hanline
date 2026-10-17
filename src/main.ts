@@ -11,7 +11,9 @@ import {
 } from './catalog'
 import { extractTarBz2, resolveAsrPaths, resolveTtsPaths, type FileMap } from './archive'
 import { concatFloats, encodeWav, resampleLinear } from './audio'
-import { loadFileMap, loadWeight } from './download'
+import { isAbort, loadFileMap, loadWeight } from './download'
+import { applyMirror, readMirror, MIRROR_KEY, type Mirror } from './mirror'
+import { progressLabel, type Transfer } from './progress'
 import { buildTranslatePrompt, stripThink, voiceAction, type VoiceChoice } from './prompt'
 import { Wllama } from '@wllama/wllama'
 
@@ -76,7 +78,7 @@ export function mount(root: HTMLElement): void {
   const title = el('h1', {}, 'Hanline')
   const lede = el('p', { class: 'lede' }, 'Hold the button, speak Chinese, and read the English as it arrives.')
   const status = el('p', { class: 'status' }, 'Preparing models…')
-  const bar = el('div', { class: 'bar' })
+  const bar = el('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0', 'aria-label': 'Download' })
   const barFill = el('span')
   bar.append(barFill)
   const error = el('p', { class: 'error' })
@@ -92,16 +94,21 @@ export function mount(root: HTMLElement): void {
   const voiceBrowser = el('button', { type: 'button' }, 'Browser voice')
   const voicePiper = el('button', { type: 'button' }, 'English model')
   const hear = el('button', { type: 'button' }, 'Hear it')
+  const sourceIntl = el('button', { type: 'button', 'aria-pressed': 'true' }, 'International')
+  const sourceChina = el('button', { type: 'button', 'aria-pressed': 'false' }, 'China mirror')
   const controls = el('div', { class: 'row' })
   controls.append(hold, speak, hear)
+  const sources = el('div', { class: 'row' })
+  sources.append(el('span', { class: 'source-label' }, 'Download from'), sourceIntl, sourceChina)
   const choices = el('div', { class: 'row' })
   choices.append(model08, model2, voiceBrowser, voicePiper)
-  app.append(title, lede, status, bar, error, chinesePanel, englishPanel, controls, choices)
+  app.append(title, lede, status, bar, error, chinesePanel, englishPanel, controls, sources, choices)
   root.append(app)
 
   const chineseNode = chinesePanel.querySelector('#chinese') as HTMLElement
   const englishNode = englishPanel.querySelector('#english') as HTMLElement
 
+  let mirror: Mirror = readMirror(storedMirror())
   let modelId: TranslateModelId = QWEN_08_ID
   let voice: VoiceChoice = 'browser'
   let speakOn = false
@@ -125,19 +132,54 @@ export function mount(root: HTMLElement): void {
   let clipRate = 22050
   let generation = 0
   let workletReady = false
+  let bootId = 0
+  let job = new AbortController()
+  let paintAt = 0
+
+  function storedMirror(): string | null {
+    try {
+      return localStorage.getItem(MIRROR_KEY)
+    } catch {
+      return null
+    }
+  }
+
+  function rememberMirror(next: Mirror) {
+    try {
+      localStorage.setItem(MIRROR_KEY, next)
+    } catch {
+      /* the choice still applies for this visit */
+    }
+  }
 
   function paintChoices() {
     model08.classList.toggle('selected', modelId === QWEN_08_ID)
     model2.classList.toggle('selected', modelId === 'qwen35-2b')
     voiceBrowser.classList.toggle('selected', voice === 'browser')
     voicePiper.classList.toggle('selected', voice === 'piper')
+    sourceIntl.classList.toggle('selected', mirror === 'international')
+    sourceChina.classList.toggle('selected', mirror === 'china')
+    sourceIntl.setAttribute('aria-pressed', mirror === 'international' ? 'true' : 'false')
+    sourceChina.setAttribute('aria-pressed', mirror === 'china' ? 'true' : 'false')
     speak.setAttribute('aria-checked', speakOn ? 'true' : 'false')
   }
 
   function setStatus(text: string, ratio = 1, readyState = '') {
     status.textContent = text
-    barFill.style.width = `${Math.round(ratio * 100)}%`
+    const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)))
+    barFill.style.width = `${pct}%`
+    bar.setAttribute('aria-valuenow', String(pct))
     if (readyState) status.dataset.ready = readyState
+  }
+
+  function report(title: string, transfer: Transfer) {
+    const view = progressLabel(title, transfer)
+    const now = performance.now()
+    const pct = Math.round(view.ratio * 100)
+    const quiet = transfer.phase === 'download' && pct !== 0 && pct !== 100 && now - paintAt < 150
+    if (quiet && status.textContent?.includes('%')) return
+    paintAt = now
+    setStatus(view.text, view.ratio)
   }
 
   function showError(err: unknown) {
@@ -295,10 +337,13 @@ export function mount(root: HTMLElement): void {
     return out
   }
 
-  async function loadAsr(speech: Worker) {
-    setStatus('Downloading Chinese dictation…', 0)
+  async function loadAsr(speech: Worker, signal: AbortSignal) {
     const packedAsr = await (async () => {
-      const files = await loadFileMap(ASR_FILES, (ratio) => setStatus('Downloading Chinese dictation…', ratio))
+      const files = await loadFileMap(
+        ASR_FILES.map((file) => applyMirror(file, mirror)),
+        (transfer) => report('Chinese dictation', transfer),
+        signal,
+      )
       const paths = resolveAsrPaths(files)
       const needed = keepFiles(files, [paths.encoder, paths.decoder, paths.tokens])
       return { paths, packed: fileMapMessage(needed) }
@@ -319,17 +364,25 @@ export function mount(root: HTMLElement): void {
     asrReady = true
   }
 
-  async function loadPiper(speech: Worker) {
-    setStatus('Downloading English voice…', 0)
+  async function loadPiper(speech: Worker, signal: AbortSignal) {
     const packedTts = await (async () => {
-      const files = await loadFileMap(PIPER_FILES, (ratio) =>
-        setStatus('Downloading English voice…', Math.min(0.7, ratio * 0.7)),
+      const piper = PIPER_FILES.map((file) => applyMirror(file, mirror))
+      const espeak = applyMirror({ ...ESPEAK_PACK, url: assetUrl(ESPEAK_PACK.file) }, mirror)
+      const grand = [...piper, espeak].reduce((sum, file) => sum + file.bytes, 0) || 1
+      const piperBytes = piper.reduce((sum, file) => sum + file.bytes, 0)
+      const files = await loadFileMap(
+        piper,
+        (transfer) => report('English voice', { ...transfer, total: grand }),
+        signal,
       )
-      const espeak = {
-        ...ESPEAK_PACK,
-        url: assetUrl(ESPEAK_PACK.file),
-      }
-      const archive = await loadWeight(espeak, (ratio) => setStatus('Downloading English voice…', 0.7 + ratio * 0.25))
+      const archive = await loadWeight(
+        espeak,
+        (transfer) => {
+          const current = transfer.phase === 'download' ? transfer.received : espeak.bytes
+          report('English voice', { received: piperBytes + current, total: grand, phase: transfer.phase })
+        },
+        signal,
+      )
       setStatus('Unpacking English voice…', 0.96)
       const dataFiles = extractTarBz2(archive)
       for (const [path, data] of Object.entries(dataFiles)) files[path] = data
@@ -360,9 +413,9 @@ export function mount(root: HTMLElement): void {
     setStatus('Ready', 1, 'piper')
   }
 
-  async function loadLlama(file: WeightFile) {
-    setStatus(`Downloading ${file.file}…`, 0)
-    const bytes = await loadWeight(file, (ratio) => setStatus(`Downloading ${file.file}…`, ratio))
+  async function loadLlama(file: WeightFile, signal: AbortSignal) {
+    const bytes = await loadWeight(applyMirror(file, mirror), (transfer) => report('Translation model', transfer), signal)
+    if (signal.aborted) return
     if (llama) await llama.exit()
     llama = new Wllama({ default: assetUrl('vendor/wllama.wasm') }, { suppressNativeLog: true })
     setStatus('Loading translation model…', 1)
@@ -376,32 +429,61 @@ export function mount(root: HTMLElement): void {
   }
 
   async function boot() {
+    const id = ++bootId
+    job.abort()
+    job = new AbortController()
+    const signal = job.signal
+    ready = false
+    hold.disabled = true
     try {
       paintChoices()
       const speech = await ensureWorker()
-      await loadAsr(speech)
-      await loadLlama(translateModel(modelId))
+      if (id !== bootId) return
+      await loadAsr(speech, signal)
+      if (id !== bootId) return
+      await loadLlama(translateModel(modelId), signal)
+      if (id !== bootId) return
       ready = asrReady && Boolean(llama)
       hold.disabled = !ready
       setStatus(ready ? 'Ready' : 'Still preparing…', 1, ready ? 'asr' : '')
     } catch (err) {
+      if (id !== bootId || isAbort(err)) return
       showError(err)
       setStatus('Setup failed', 0)
     }
   }
 
+  function chooseMirror(next: Mirror) {
+    if (next === mirror) return
+    mirror = next
+    rememberMirror(next)
+    paintChoices()
+    if (ready) return
+    error.textContent = ''
+    void boot()
+  }
+
   async function switchModel(next: TranslateModelId) {
     if (next === modelId || holding) return
     modelId = next
+    paintChoices()
+    if (!ready) {
+      await boot()
+      return
+    }
+    job.abort()
+    job = new AbortController()
+    const signal = job.signal
     ready = false
     hold.disabled = true
-    paintChoices()
     try {
-      await loadLlama(translateModel(modelId))
+      await loadLlama(translateModel(modelId), signal)
+      if (signal.aborted) return
       ready = asrReady && Boolean(llama)
       hold.disabled = !ready
       setStatus('Ready', 1, 'asr')
     } catch (err) {
+      if (isAbort(err)) return
       showError(err)
     }
   }
@@ -410,11 +492,14 @@ export function mount(root: HTMLElement): void {
     voice = next
     paintChoices()
     if (next === 'piper' && !ttsReady) {
+      const signal = job.signal
       try {
         const speech = await ensureWorker()
-        await loadPiper(speech)
+        await loadPiper(speech, signal)
+        if (signal.aborted) return
         setStatus('Ready', 1)
       } catch (err) {
+        if (isAbort(err)) return
         showError(err)
       }
     }
@@ -517,6 +602,8 @@ export function mount(root: HTMLElement): void {
   voicePiper.addEventListener('click', () => {
     switchVoice('piper').catch(showError)
   })
+  sourceIntl.addEventListener('click', () => chooseMirror('international'))
+  sourceChina.addEventListener('click', () => chooseMirror('china'))
   hear.addEventListener('click', () => {
     const text = probe.english.trim()
     if (!text) return

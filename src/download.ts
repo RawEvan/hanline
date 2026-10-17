@@ -1,5 +1,17 @@
 import type { WeightFile } from './catalog'
 import { sha256Hex, type FileMap } from './archive'
+import type { Transfer } from './progress'
+
+export function isAbort(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'name' in error && (error as { name?: string }).name === 'AbortError')
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const reason = signal.reason
+  if (isAbort(reason)) throw reason
+  throw new DOMException('Aborted', 'AbortError')
+}
 
 function concat(chunks: Uint8Array[]): Uint8Array {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
@@ -50,30 +62,53 @@ function downloadUrls(file: WeightFile): string[] {
   return urls
 }
 
-async function fetchBytes(url: string, file: WeightFile, onProgress: (ratio: number) => void): Promise<Uint8Array> {
-  const response = await fetch(url)
+async function fetchBytes(
+  url: string,
+  file: WeightFile,
+  onProgress: (transfer: Transfer) => void,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const planned = file.bytes || 0
+  onProgress({ received: 0, total: planned, phase: 'download' })
+  const response = await fetch(url, { signal })
   if (!response.ok || !response.body) throw new Error(`Download failed (${response.status || 0}).`)
   const total = file.bytes || Number(response.headers.get('content-length') || 0)
+  onProgress({ received: 0, total, phase: 'download' })
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let received = 0
   while (true) {
+    throwIfAborted(signal)
     const step = await reader.read()
     if (step.done) break
     chunks.push(step.value)
     received += step.value.length
-    if (total) onProgress(Math.min(0.99, received / total))
+    onProgress({ received, total: total || received, phase: 'download' })
   }
   return concat(chunks)
 }
 
+function hostHint(file: WeightFile): string {
+  let host = ''
+  try {
+    host = new URL(file.url, 'https://hanline.local').host
+  } catch {
+    host = ''
+  }
+  if (host === 'www.modelscope.cn') return 'Could not reach the China mirror.'
+  if (host === 'huggingface.co') return 'Could not reach Hugging Face.'
+  return 'Could not download a file from this site.'
+}
+
 export async function loadWeight(
   file: WeightFile,
-  onProgress: (ratio: number) => void,
+  onProgress: (transfer: Transfer) => void,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
+  throwIfAborted(signal)
   const cached = await readCached(file)
   if (cached) {
-    onProgress(1)
+    onProgress({ received: file.bytes || cached.length, total: file.bytes || cached.length, phase: 'download' })
     return cached
   }
   const urls = downloadUrls(file)
@@ -81,43 +116,52 @@ export async function loadWeight(
   let lastError: unknown
   for (const url of urls) {
     try {
-      const bytes = await fetchBytes(url, file, onProgress)
+      throwIfAborted(signal)
+      const bytes = await fetchBytes(url, file, onProgress, signal)
+      const total = file.bytes || bytes.length
+      onProgress({ received: total, total, phase: 'check' })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      throwIfAborted(signal)
       if (file.sha256 && (await sha256Hex(bytes.slice())) !== file.sha256) {
         throw new Error('Download did not match the published checksum.')
       }
+      throwIfAborted(signal)
+      onProgress({ received: total, total, phase: 'save' })
       await writeCached(file, bytes)
-      onProgress(1)
+      onProgress({ received: total, total, phase: 'download' })
       return bytes
     } catch (error) {
+      if (isAbort(error)) throw error
       lastError = error
     }
   }
   const message = lastError instanceof Error ? lastError.message : String(lastError || '')
-  if (/failed to fetch|networkerror|load failed/i.test(message)) {
-    throw new Error(
-      'Could not reach the model host. Open Hugging Face in this browser, or put the model files in .cache and restart npm run dev.',
-    )
-  }
+  if (/failed to fetch|networkerror|load failed/i.test(message)) throw new Error(hostHint(file))
   throw lastError instanceof Error ? lastError : new Error('Download failed.')
 }
 
 export async function loadFileMap(
   files: WeightFile[],
-  onProgress: (ratio: number) => void,
+  onProgress: (transfer: Transfer) => void,
+  signal?: AbortSignal,
 ): Promise<FileMap> {
-  const total = files.reduce((sum, file) => sum + (file.bytes || 0), 0) || files.length
+  const total = files.reduce((sum, file) => sum + (file.bytes || 0), 0) || 1
   let done = 0
   const out: FileMap = {}
   for (const file of files) {
     const before = done
-    const bytes = await loadWeight(file, (ratio) => {
-      const loaded = before + (file.bytes || 1) * ratio
-      onProgress(Math.min(0.99, loaded / total))
-    })
+    const bytes = await loadWeight(
+      file,
+      (transfer) => {
+        const current = transfer.phase === 'download' ? transfer.received : file.bytes || transfer.received
+        onProgress({ received: before + current, total, phase: transfer.phase })
+      },
+      signal,
+    )
     out[file.mapPath] = bytes
-    done += file.bytes || 1
-    onProgress(Math.min(0.99, done / total))
+    done += file.bytes || bytes.length
+    onProgress({ received: Math.min(done, total), total, phase: 'download' })
   }
-  onProgress(1)
+  onProgress({ received: total, total, phase: 'download' })
   return out
 }

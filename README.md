@@ -10,7 +10,7 @@ Hosted build (GitHub Pages):
 
 https://rawevan.github.io/hanline/
 
-The first visit downloads the dictation and translation files from Hugging Face (about 0.8GB for the default 0.8B setup). Optional English-model speech also loads a small same-origin voice data pack. Later visits reuse the browser’s stored copies.
+The first visit downloads the dictation and translation files (about 0.8GB for the default 0.8B setup). Download from stays on International (Hugging Face) until you choose China mirror (the same files on ModelScope). The optional English voice model is on International. A small voice data pack comes from this site. Later visits reuse the browser’s stored copies. The status line shows percent and size while a file is coming in.
 
 ## Run locally
 

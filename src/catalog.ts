@@ -9,13 +9,18 @@ export type WeightFile = {
   file: string
   /** Path used inside the speech worker filesystem */
   mapPath: string
+  /** Publisher URL used by the international source. */
   url: string
+  /** Same bytes on the China source. Absent when that file is not published there. */
+  cn?: string
   bytes: number
   sha256: string
 }
 
 const ASR_BASE =
   'https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/main'
+const ASR_CN =
+  'https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/master'
 const PIPER_BASE = 'https://huggingface.co/csukuangfj/vits-piper-en_US-lessac-medium/resolve/main'
 
 /** Dictation weights (Hugging Face; browser-CORS friendly). */
@@ -25,6 +30,7 @@ export const ASR_FILES: WeightFile[] = [
     file: 'asr-encoder.int8.onnx',
     mapPath: 'encoder.int8.onnx',
     url: `${ASR_BASE}/encoder.int8.onnx`,
+    cn: `${ASR_CN}/encoder.int8.onnx`,
     bytes: 165_462_184,
     sha256: '81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a',
   },
@@ -33,6 +39,7 @@ export const ASR_FILES: WeightFile[] = [
     file: 'asr-decoder.int8.onnx',
     mapPath: 'decoder.int8.onnx',
     url: `${ASR_BASE}/decoder.int8.onnx`,
+    cn: `${ASR_CN}/decoder.int8.onnx`,
     bytes: 71_664_561,
     sha256: 'f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f',
   },
@@ -41,6 +48,7 @@ export const ASR_FILES: WeightFile[] = [
     file: 'asr-tokens.txt',
     mapPath: 'tokens.txt',
     url: `${ASR_BASE}/tokens.txt`,
+    cn: `${ASR_CN}/tokens.txt`,
     bytes: 75_756,
     sha256: '59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6',
   },
@@ -85,6 +93,7 @@ export const TRANSLATE_MODELS: WeightFile[] = [
     file: 'Qwen3.5-0.8B-Q4_K_M.gguf',
     mapPath: 'Qwen3.5-0.8B-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf',
+    cn: 'https://www.modelscope.cn/models/unsloth/Qwen3.5-0.8B-GGUF/resolve/master/Qwen3.5-0.8B-Q4_K_M.gguf',
     bytes: 532_517_120,
     sha256: 'bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517',
   },
@@ -93,6 +102,7 @@ export const TRANSLATE_MODELS: WeightFile[] = [
     file: 'Qwen3.5-2B-Q4_K_M.gguf',
     mapPath: 'Qwen3.5-2B-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf',
+    cn: 'https://www.modelscope.cn/models/unsloth/Qwen3.5-2B-GGUF/resolve/master/Qwen3.5-2B-Q4_K_M.gguf',
     bytes: 1_280_835_840,
     sha256: 'aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223',
   },
@@ -105,17 +115,14 @@ export function translateModel(id: string): WeightFile {
 }
 
 export function weightUrls(): string[] {
-  return [
-    ...ASR_FILES.map((row) => row.url),
-    ...PIPER_FILES.map((row) => row.url),
-    ...TRANSLATE_MODELS.map((row) => row.url),
-  ]
+  const rows = [...ASR_FILES, ...PIPER_FILES, ...TRANSLATE_MODELS]
+  return rows.flatMap((row) => (row.cn ? [row.url, row.cn] : [row.url]))
 }
 
 export function allowedWeightHost(url: string): boolean {
   if (!url) return false
   const host = new URL(url).host
-  return host === 'huggingface.co'
+  return host === 'huggingface.co' || host === 'www.modelscope.cn'
 }
 
 export function cacheFileNames(): string[] {

@@ -28,8 +28,14 @@ test('weight urls are Hugging Face files browsers can fetch', () => {
     translateModel(QWEN_2B_ID).url,
     'https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf',
   )
+  assert.equal(
+    ASR_FILES[0].cn,
+    'https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-streaming-paraformer-bilingual-zh-en/resolve/master/encoder.int8.onnx',
+  )
+  assert.equal(PIPER_FILES[0].cn, undefined)
   for (const url of weightUrls()) {
     assert.equal(allowedWeightHost(url), true)
+    assert.equal(url.includes('hf-mirror.com'), false)
   }
   assert.equal(ESPEAK_PACK.url, '')
   assert.equal(ESPEAK_PACK.file, 'espeak-ng-data.tar.bz2')
