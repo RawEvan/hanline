@@ -1,5 +1,6 @@
 import type { WeightFile } from './catalog'
 import { sha256Hex, type FileMap } from './archive'
+import { cacheWriteCurrent, currentCacheEpoch, isMissingFile } from './cache'
 import type { Transfer } from './progress'
 
 export function isAbort(error: unknown): boolean {
@@ -41,11 +42,26 @@ async function readCached(file: WeightFile): Promise<Uint8Array | null> {
 
 async function writeCached(file: WeightFile, bytes: Uint8Array): Promise<void> {
   if (!navigator.storage?.getDirectory) return
+  const epoch = currentCacheEpoch()
   try {
     const root = await navigator.storage.getDirectory()
+    if (!cacheWriteCurrent(epoch)) return
     const handle = await root.getFileHandle(file.file, { create: true })
     const writable = await handle.createWritable()
+    if (!cacheWriteCurrent(epoch)) {
+      await writable.abort()
+      return
+    }
     await writable.write(bytes.slice())
+    if (!cacheWriteCurrent(epoch)) {
+      await writable.abort()
+      try {
+        await root.removeEntry(file.file)
+      } catch (error) {
+        if (!isMissingFile(error)) throw error
+      }
+      return
+    }
     await writable.close()
   } catch (error) {
     const name = error && typeof error === 'object' && 'name' in error ? String(error.name) : ''

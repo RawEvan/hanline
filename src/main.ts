@@ -5,12 +5,14 @@ import {
   ESPEAK_PACK,
   PIPER_FILES,
   QWEN_08_ID,
+  cacheFileNames,
   translateModel,
   type TranslateModelId,
   type WeightFile,
 } from './catalog'
 import { extractTarBz2, resolveAsrPaths, resolveTtsPaths, type FileMap } from './archive'
 import { concatFloats, encodeWav, resampleLinear } from './audio'
+import { invalidateCacheWrites, removeCachedFiles } from './cache'
 import { isAbort, loadFileMap, loadWeight } from './download'
 import { applyMirror, readMirror, MIRROR_KEY, type Mirror } from './mirror'
 import { progressLabel, type Transfer } from './progress'
@@ -102,7 +104,12 @@ export function mount(root: HTMLElement): void {
   sources.append(el('span', { class: 'source-label' }, 'Download from'), sourceIntl, sourceChina)
   const choices = el('div', { class: 'row' })
   choices.append(model08, model2, voiceBrowser, voicePiper)
-  app.append(title, lede, status, bar, error, chinesePanel, englishPanel, controls, sources, choices)
+  const clearBtn = el('button', { type: 'button', class: 'ghost' }, 'Clear downloads')
+  const cancelClear = el('button', { type: 'button', class: 'ghost' }, 'Cancel')
+  cancelClear.hidden = true
+  const maintenance = el('div', { class: 'row' })
+  maintenance.append(clearBtn, cancelClear)
+  app.append(title, lede, status, bar, error, chinesePanel, englishPanel, controls, sources, choices, maintenance)
   root.append(app)
 
   const chineseNode = chinesePanel.querySelector('#chinese') as HTMLElement
@@ -133,6 +140,8 @@ export function mount(root: HTMLElement): void {
   let generation = 0
   let workletReady = false
   let bootId = 0
+  let statusBoot = 0
+  let confirmClear = false
   let job = new AbortController()
   let paintAt = 0
 
@@ -172,7 +181,13 @@ export function mount(root: HTMLElement): void {
     if (readyState) status.dataset.ready = readyState
   }
 
+  function setLiveStatus(text: string, ratio = 1, readyState = '') {
+    if (statusBoot !== bootId) return
+    setStatus(text, ratio, readyState)
+  }
+
   function report(title: string, transfer: Transfer) {
+    if (statusBoot !== bootId) return
     const view = progressLabel(title, transfer)
     const now = performance.now()
     const pct = Math.round(view.ratio * 100)
@@ -220,7 +235,7 @@ export function mount(root: HTMLElement): void {
     await new Promise<void>((resolve, reject) => {
       const wait = (event: MessageEvent) => {
         if (event.data?.type === 'trace') {
-          setStatus(String(event.data.message || 'Starting speech engine…'))
+          setLiveStatus(String(event.data.message || 'Starting speech engine…'))
           return
         }
         if (event.data?.type === 'ready') {
@@ -383,7 +398,7 @@ export function mount(root: HTMLElement): void {
         },
         signal,
       )
-      setStatus('Unpacking English voice…', 0.96)
+      setLiveStatus('Unpacking English voice…', 0.96)
       const dataFiles = extractTarBz2(archive)
       for (const [path, data] of Object.entries(dataFiles)) files[path] = data
       const paths = resolveTtsPaths(files)
@@ -410,7 +425,7 @@ export function mount(root: HTMLElement): void {
       )
     })
     ttsReady = true
-    setStatus('Ready', 1, 'piper')
+    setLiveStatus('Ready', 1, 'piper')
   }
 
   async function loadLlama(file: WeightFile, signal: AbortSignal) {
@@ -418,7 +433,7 @@ export function mount(root: HTMLElement): void {
     if (signal.aborted) return
     if (llama) await llama.exit()
     llama = new Wllama({ default: assetUrl('vendor/wllama.wasm') }, { suppressNativeLog: true })
-    setStatus('Loading translation model…', 1)
+    setLiveStatus('Loading translation model…', 1)
     await llama.loadModel([new Blob([bytes.slice()])], {
       n_ctx: 512,
       n_threads: 1,
@@ -430,6 +445,7 @@ export function mount(root: HTMLElement): void {
 
   async function boot() {
     const id = ++bootId
+    statusBoot = id
     job.abort()
     job = new AbortController()
     const signal = job.signal
@@ -445,12 +461,54 @@ export function mount(root: HTMLElement): void {
       if (id !== bootId) return
       ready = asrReady && Boolean(llama)
       hold.disabled = !ready
-      setStatus(ready ? 'Ready' : 'Still preparing…', 1, ready ? 'asr' : '')
+      setLiveStatus(ready ? 'Ready' : 'Still preparing…', 1, ready ? 'asr' : '')
     } catch (err) {
       if (id !== bootId || isAbort(err)) return
       showError(err)
-      setStatus('Setup failed', 0)
+      setLiveStatus('Setup failed', 0)
     }
+  }
+
+  function resetClearPrompt() {
+    confirmClear = false
+    clearBtn.textContent = 'Clear downloads'
+    cancelClear.hidden = true
+  }
+
+  async function clearDownloads() {
+    if (!confirmClear) {
+      confirmClear = true
+      clearBtn.textContent = 'Remove saved models'
+      cancelClear.hidden = false
+      return
+    }
+    resetClearPrompt()
+    if (holding) stopHold()
+    invalidateCacheWrites()
+    bootId += 1
+    job.abort()
+    job = new AbortController()
+    worker?.terminate()
+    worker = null
+    ready = false
+    asrReady = false
+    ttsReady = false
+    hold.disabled = true
+    if (llama) {
+      const current = llama
+      llama = null
+      await current.exit().catch(() => {})
+    }
+    try {
+      await removeCachedFiles(cacheFileNames())
+    } catch (err) {
+      showError(err)
+      setStatus('Could not remove saved models.', 0)
+      return
+    }
+    error.textContent = ''
+    delete status.dataset.ready
+    setStatus('Saved models removed. Reload the page to download them again.', 0)
   }
 
   function chooseMirror(next: Mirror) {
@@ -481,7 +539,7 @@ export function mount(root: HTMLElement): void {
       if (signal.aborted) return
       ready = asrReady && Boolean(llama)
       hold.disabled = !ready
-      setStatus('Ready', 1, 'asr')
+      setLiveStatus('Ready', 1, 'asr')
     } catch (err) {
       if (isAbort(err)) return
       showError(err)
@@ -497,7 +555,7 @@ export function mount(root: HTMLElement): void {
         const speech = await ensureWorker()
         await loadPiper(speech, signal)
         if (signal.aborted) return
-        setStatus('Ready', 1)
+        setLiveStatus('Ready', 1)
       } catch (err) {
         if (isAbort(err)) return
         showError(err)
@@ -604,6 +662,12 @@ export function mount(root: HTMLElement): void {
   })
   sourceIntl.addEventListener('click', () => chooseMirror('international'))
   sourceChina.addEventListener('click', () => chooseMirror('china'))
+  clearBtn.addEventListener('click', () => {
+    clearDownloads().catch(showError)
+  })
+  cancelClear.addEventListener('click', () => {
+    resetClearPrompt()
+  })
   hear.addEventListener('click', () => {
     const text = probe.english.trim()
     if (!text) return
