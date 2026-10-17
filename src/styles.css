@@ -1,0 +1,137 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f7fb;
+  --ink: #172033;
+  --muted: #5c6b82;
+  --line: #d5deea;
+  --panel: #ffffff;
+  --accent: #1f6feb;
+  --accent-ink: #ffffff;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+body {
+  padding: 28px 22px 40px;
+}
+
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.lede {
+  margin: 0 0 22px;
+  color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px 16px 18px;
+  margin-bottom: 14px;
+}
+
+.label {
+  margin: 0 0 8px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.transcript {
+  min-height: 72px;
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+button, .switch {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  min-height: 44px;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+  min-width: 180px;
+  font-weight: 650;
+}
+
+button:disabled { opacity: 0.45; cursor: default; }
+
+button.selected {
+  background: #e7f0ff;
+  border-color: #b9d2ff;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+}
+
+.switch[aria-checked="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status, .error {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.error { color: #9f2d2d; }
+
+.bar {
+  height: 6px;
+  background: #e6edf6;
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}

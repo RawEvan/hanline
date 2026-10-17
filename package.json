@@ -1,0 +1,29 @@
+{
+  "name": "hanline",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Listen to Chinese and hear English, on this device.",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/copy-engines.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b --pretty false && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --experimental-strip-types --test src/**/*.test.ts",
+    "models:fetch": "node --experimental-strip-types scripts/fetch-models.mjs",
+    "check:pages-dist": "node scripts/check-pages-dist.mjs",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "@wllama/wllama": "3.8.1",
+    "buffer": "^6.0.3",
+    "seek-bzip": "^2.0.0",
+    "sherpa-onnx": "1.13.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
